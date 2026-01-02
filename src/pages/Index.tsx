@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import Icon from '@/components/ui/icon';
@@ -28,6 +28,13 @@ interface BikeCustomization {
   hasHeadlights: boolean;
 }
 
+interface Obstacle {
+  x: number;
+  y: number;
+  id: number;
+  type: 'box' | 'spike' | 'barrier';
+}
+
 interface GameState {
   coins: number;
   eventCoins: number;
@@ -47,10 +54,24 @@ const Index = () => {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [gameActive, setGameActive] = useState(false);
-  const [bikePosition, setBikePosition] = useState(50);
-  const [obstacles, setObstacles] = useState<{ x: number; y: number; id: number }[]>([]);
+  const [bikeY, setBikeY] = useState(300);
+  const [bikeVelocityY, setBikeVelocityY] = useState(0);
+  const [isJumping, setIsJumping] = useState(false);
+  const [obstacles, setObstacles] = useState<Obstacle[]>([]);
   const [score, setScore] = useState(0);
+  const [distance, setDistance] = useState(0);
   const [gameSpeed, setGameSpeed] = useState(5);
+  const [isGameOver, setIsGameOver] = useState(false);
+  const [isLevelComplete, setIsLevelComplete] = useState(false);
+  const gameLoopRef = useRef<number>();
+  const lastObstacleSpawnRef = useRef(0);
+
+  const GROUND_Y = 400;
+  const BIKE_WIDTH = 80;
+  const BIKE_HEIGHT = 40;
+  const GRAVITY = 0.6;
+  const JUMP_FORCE = -12;
+  const LEVEL_DISTANCE = 2000;
 
   const [gameState, setGameState] = useState<GameState>({
     coins: 0,
@@ -68,7 +89,7 @@ const Index = () => {
       bodyColor: '#00ff41',
       wheelColor: '#ffffff',
       handlebarColor: '#9b87f5',
-      hasHeadlights: false,
+      hasHeadlights: true,
     },
     achievements: [],
     dailyQuests: [
@@ -95,56 +116,135 @@ const Index = () => {
     expert: 'ЭКСПЕРТ',
   };
 
+  const handleJump = () => {
+    if (!gameActive || isGameOver || isLevelComplete) return;
+    
+    const onGround = Math.abs(bikeY - GROUND_Y) < 5;
+    if (onGround && !isJumping) {
+      setBikeVelocityY(JUMP_FORCE);
+      setIsJumping(true);
+    }
+  };
+
   useEffect(() => {
-    if (!gameActive) return;
+    if (!gameActive || isGameOver || isLevelComplete) return;
 
-    const gameLoop = setInterval(() => {
-      setObstacles((prev) => {
-        const updated = prev
-          .map((obs) => ({ ...obs, x: obs.x - gameSpeed }))
-          .filter((obs) => obs.x > -50);
+    const handleKeyPress = (e: KeyboardEvent) => {
+      if (e.code === 'Space' || e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+        e.preventDefault();
+        handleJump();
+      }
+    };
 
-        if (Math.random() < 0.03) {
-          updated.push({
-            x: 800,
-            y: Math.random() * 80 + 10,
-            id: Date.now(),
-          });
+    const handleClick = () => {
+      handleJump();
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    window.addEventListener('click', handleClick);
+    window.addEventListener('touchstart', handleClick);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyPress);
+      window.removeEventListener('click', handleClick);
+      window.removeEventListener('touchstart', handleClick);
+    };
+  }, [gameActive, isGameOver, isLevelComplete, bikeY, isJumping]);
+
+  useEffect(() => {
+    if (!gameActive || isGameOver || isLevelComplete) {
+      if (gameLoopRef.current) {
+        cancelAnimationFrame(gameLoopRef.current);
+      }
+      return;
+    }
+
+    let animationFrameId: number;
+    let lastTime = Date.now();
+
+    const gameLoop = () => {
+      const currentTime = Date.now();
+      const deltaTime = (currentTime - lastTime) / 16.67;
+      lastTime = currentTime;
+
+      setBikeVelocityY(prev => {
+        const newVelocity = prev + GRAVITY * deltaTime;
+        return newVelocity;
+      });
+
+      setBikeY(prev => {
+        const newY = prev + bikeVelocityY * deltaTime;
+        if (newY >= GROUND_Y) {
+          setIsJumping(false);
+          return GROUND_Y;
         }
+        return newY;
+      });
 
-        updated.forEach((obs) => {
+      setDistance(prev => prev + gameSpeed * deltaTime);
+      setScore(prev => prev + 1);
+
+      if (currentTime - lastObstacleSpawnRef.current > 1500) {
+        const types: Obstacle['type'][] = ['box', 'spike', 'barrier'];
+        const randomType = types[Math.floor(Math.random() * types.length)];
+        
+        setObstacles(prev => [...prev, {
+          x: 1000,
+          y: GROUND_Y,
+          id: Date.now(),
+          type: randomType
+        }]);
+        lastObstacleSpawnRef.current = currentTime;
+      }
+
+      setObstacles(prev => {
+        const updated = prev
+          .map(obs => ({ ...obs, x: obs.x - gameSpeed * deltaTime }))
+          .filter(obs => obs.x > -100);
+
+        updated.forEach(obs => {
+          const bikeLeft = 100;
+          const bikeRight = bikeLeft + BIKE_WIDTH;
+          const bikeTop = bikeY;
+          const bikeBottom = bikeY + BIKE_HEIGHT;
+
+          const obsLeft = obs.x;
+          const obsRight = obs.x + 60;
+          const obsTop = obs.y - 60;
+          const obsBottom = obs.y;
+
           if (
-            obs.x < 150 &&
-            obs.x > 50 &&
-            Math.abs(obs.y - bikePosition) < 10
+            bikeRight > obsLeft &&
+            bikeLeft < obsRight &&
+            bikeBottom > obsTop &&
+            bikeTop < obsBottom
           ) {
-            endGame(false);
+            setIsGameOver(true);
+            setGameActive(false);
           }
         });
 
         return updated;
       });
 
-      setScore((prev) => prev + 1);
-    }, 50);
-
-    return () => clearInterval(gameLoop);
-  }, [gameActive, bikePosition, gameSpeed]);
-
-  useEffect(() => {
-    if (!gameActive) return;
-
-    const handleKeyPress = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowUp') {
-        setBikePosition((prev) => Math.max(10, prev - 5));
-      } else if (e.key === 'ArrowDown') {
-        setBikePosition((prev) => Math.min(90, prev + 5));
+      if (distance >= LEVEL_DISTANCE) {
+        setIsLevelComplete(true);
+        setGameActive(false);
+        return;
       }
+
+      animationFrameId = requestAnimationFrame(gameLoop);
     };
 
-    window.addEventListener('keydown', handleKeyPress);
-    return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [gameActive]);
+    animationFrameId = requestAnimationFrame(gameLoop);
+    gameLoopRef.current = animationFrameId;
+
+    return () => {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
+  }, [gameActive, isGameOver, isLevelComplete, bikeY, bikeVelocityY, gameSpeed, distance]);
 
   const startLevel = (levelId: number) => {
     const level = gameState.levels.find((l) => l.id === levelId);
@@ -155,6 +255,13 @@ const Index = () => {
     setGameActive(true);
     setObstacles([]);
     setScore(0);
+    setDistance(0);
+    setBikeY(GROUND_Y);
+    setBikeVelocityY(0);
+    setIsJumping(false);
+    setIsGameOver(false);
+    setIsLevelComplete(false);
+    lastObstacleSpawnRef.current = Date.now();
     
     const difficultySpeed: Record<Difficulty, number> = {
       easy: 4,
@@ -165,35 +272,50 @@ const Index = () => {
     setGameSpeed(difficultySpeed[level.difficulty]);
   };
 
-  const endGame = (won: boolean) => {
-    setGameActive(false);
-    
-    if (won) {
-      const level = gameState.levels[gameState.currentLevel - 1];
-      setGameState((prev) => {
-        const updatedLevels = [...prev.levels];
-        updatedLevels[gameState.currentLevel - 1].completed = true;
-        updatedLevels[gameState.currentLevel - 1].stars = 3;
-        
-        if (gameState.currentLevel < 16) {
-          updatedLevels[gameState.currentLevel].unlocked = true;
-        }
+  const restartLevel = () => {
+    startLevel(gameState.currentLevel);
+  };
 
-        return {
-          ...prev,
-          coins: prev.coins + level.reward,
-          levels: updatedLevels,
-        };
-      });
-    }
+  const completeLevel = () => {
+    const level = gameState.levels[gameState.currentLevel - 1];
+    setGameState((prev) => {
+      const updatedLevels = [...prev.levels];
+      updatedLevels[gameState.currentLevel - 1].completed = true;
+      updatedLevels[gameState.currentLevel - 1].stars = 3;
+      
+      if (gameState.currentLevel < 16) {
+        updatedLevels[gameState.currentLevel].unlocked = true;
+      }
+
+      return {
+        ...prev,
+        coins: prev.coins + level.reward,
+        levels: updatedLevels,
+      };
+    });
     
     setTimeout(() => setActiveScreen('menu'), 2000);
   };
+
+  useEffect(() => {
+    if (isLevelComplete && !isGameOver) {
+      completeLevel();
+    }
+  }, [isLevelComplete]);
 
   const purchaseCustomTheme = () => {
     if (gameState.coins >= 1000) {
       setGameState((prev) => ({ ...prev, coins: prev.coins - 1000 }));
       setShowColorPicker(true);
+    }
+  };
+
+  const getObstacleIcon = (type: Obstacle['type']) => {
+    switch (type) {
+      case 'box': return '📦';
+      case 'spike': return '🔺';
+      case 'barrier': return '🚧';
+      default: return '⚠️';
     }
   };
 
@@ -317,64 +439,164 @@ const Index = () => {
       </Dialog>
 
       {activeScreen === 'game' && (
-        <div className="relative w-full h-screen overflow-hidden bg-gradient-to-b from-black via-gray-900 to-black">
+        <div className="relative w-full h-screen overflow-hidden bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900">
           <div className="absolute top-4 left-4 z-10 space-y-2">
             <div className="cyber-card px-4 py-2">
               <span className="neon-text text-xl font-bold">Уровень {gameState.currentLevel}</span>
             </div>
             <div className="cyber-card px-4 py-2">
-              <span className="text-neon-green text-lg">Счет: {score}</span>
+              <span className="text-neon-green text-lg">Дистанция: {Math.floor(distance)}/{LEVEL_DISTANCE}</span>
+            </div>
+            <div className="cyber-card px-4 py-2 w-48">
+              <Progress value={(distance / LEVEL_DISTANCE) * 100} className="h-2" />
             </div>
           </div>
 
-          {!gameActive && (
+          <div className="absolute top-4 right-4 z-10">
+            <Button
+              variant="outline"
+              className="cyber-card neon-glow"
+              onClick={() => {
+                setGameActive(false);
+                setActiveScreen('menu');
+              }}
+            >
+              <Icon name="Home" className="mr-2" />
+              В меню
+            </Button>
+          </div>
+
+          {(isGameOver || isLevelComplete) && (
             <div className="absolute inset-0 flex items-center justify-center z-20 bg-black/80">
-              <Card className="cyber-card p-8 text-center pulse-glow">
-                <h2 className="neon-text text-4xl font-bold mb-4">
-                  {score > 1000 ? 'Уровень пройден!' : 'Попробуй снова!'}
-                </h2>
-                {score > 1000 && (
-                  <p className="text-neon-green text-2xl">
-                    +{gameState.levels[gameState.currentLevel - 1].reward} монет
-                  </p>
+              <Card className="cyber-card p-8 text-center pulse-glow max-w-md">
+                {isLevelComplete ? (
+                  <>
+                    <Icon name="Trophy" className="mx-auto mb-4 text-neon-green" size={64} />
+                    <h2 className="neon-text text-4xl font-bold mb-4">Уровень пройден!</h2>
+                    <p className="text-neon-green text-2xl mb-4">
+                      +{gameState.levels[gameState.currentLevel - 1].reward} монет
+                    </p>
+                    <p className="text-gray-400 mb-6">
+                      Расстояние: {Math.floor(distance)}м
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Icon name="XCircle" className="mx-auto mb-4 text-red-500" size={64} />
+                    <h2 className="text-4xl font-bold mb-4 text-red-500">Авария!</h2>
+                    <p className="text-gray-400 mb-6">
+                      Расстояние: {Math.floor(distance)}м
+                    </p>
+                    <Button
+                      className="w-full bg-neon-green text-black neon-glow hover:bg-neon-green/80 mb-3"
+                      onClick={restartLevel}
+                    >
+                      <Icon name="RotateCcw" className="mr-2" />
+                      Попробовать снова
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full cyber-card"
+                      onClick={() => setActiveScreen('menu')}
+                    >
+                      В меню
+                    </Button>
+                  </>
                 )}
               </Card>
             </div>
           )}
 
-          <div className="absolute inset-0">
-            {[...Array(5)].map((_, i) => (
+          <div 
+            className="absolute bottom-0 left-0 right-0 h-2 bg-gradient-to-r from-neon-green via-neon-purple to-neon-green"
+            style={{ top: `${GROUND_Y + BIKE_HEIGHT}px` }}
+          />
+
+          <div
+            className="absolute left-0 right-0 h-24 bg-gradient-to-t from-gray-700 to-transparent"
+            style={{ top: `${GROUND_Y + BIKE_HEIGHT}px` }}
+          >
+            {[...Array(20)].map((_, i) => (
               <div
                 key={i}
-                className="absolute h-1 w-20 bg-white opacity-50"
+                className="absolute h-1 w-16 bg-white/30"
                 style={{
-                  top: `${50}%`,
-                  left: `${i * 25}%`,
-                  animation: `roadMove ${2 / gameSpeed}s linear infinite`,
+                  left: `${(i * 5 - (distance % 80)) % 100}%`,
+                  top: '50%',
                 }}
               />
             ))}
           </div>
 
           <div
-            className="absolute left-[100px] transition-all duration-100"
-            style={{ top: `${bikePosition}%`, transform: 'translateY(-50%)' }}
+            className="absolute transition-all duration-75"
+            style={{ 
+              left: '100px',
+              top: `${bikeY}px`,
+              transform: isJumping ? 'rotate(-10deg)' : 'rotate(0deg)',
+            }}
           >
             <div className="relative">
               <div
-                className="w-16 h-8 rounded-lg neon-glow"
-                style={{ backgroundColor: gameState.bikeCustomization.bodyColor }}
+                className="relative rounded-lg neon-glow transition-all"
+                style={{ 
+                  width: `${BIKE_WIDTH}px`, 
+                  height: `${BIKE_HEIGHT}px`,
+                  backgroundColor: gameState.bikeCustomization.bodyColor,
+                }}
               >
                 <div
-                  className="absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full"
-                  style={{ backgroundColor: gameState.bikeCustomization.wheelColor }}
+                  className="absolute rounded-full neon-glow"
+                  style={{ 
+                    left: '5px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    width: '18px',
+                    height: '18px',
+                    backgroundColor: gameState.bikeCustomization.wheelColor,
+                    animation: gameActive ? 'spin 0.3s linear infinite' : 'none',
+                  }}
                 />
                 <div
-                  className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full"
-                  style={{ backgroundColor: gameState.bikeCustomization.wheelColor }}
+                  className="absolute rounded-full neon-glow"
+                  style={{ 
+                    right: '5px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    width: '18px',
+                    height: '18px',
+                    backgroundColor: gameState.bikeCustomization.wheelColor,
+                    animation: gameActive ? 'spin 0.3s linear infinite' : 'none',
+                  }}
                 />
+                
+                <div
+                  className="absolute"
+                  style={{
+                    left: '50%',
+                    top: '20%',
+                    transform: 'translateX(-50%)',
+                    width: '20px',
+                    height: '8px',
+                    backgroundColor: gameState.bikeCustomization.handlebarColor,
+                    borderRadius: '4px',
+                  }}
+                />
+
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-2xl">
+                  🏍️
+                </div>
+
                 {gameState.bikeCustomization.hasHeadlights && (
-                  <div className="absolute -right-4 top-1/2 -translate-y-1/2 w-8 h-2 bg-yellow-300 opacity-70 blur-sm" />
+                  <div 
+                    className="absolute h-3 bg-yellow-300 opacity-70 blur-md"
+                    style={{
+                      right: '-40px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      width: '40px',
+                    }}
+                  />
                 )}
               </div>
             </div>
@@ -383,30 +605,42 @@ const Index = () => {
           {obstacles.map((obs) => (
             <div
               key={obs.id}
-              className="absolute w-8 h-8 bg-red-500 neon-glow rounded"
+              className="absolute transition-all duration-75"
               style={{
                 left: `${obs.x}px`,
-                top: `${obs.y}%`,
-                transform: 'translateY(-50%)',
+                top: `${obs.y - 60}px`,
               }}
             >
-              ⚠️
+              <div className="relative">
+                <div 
+                  className={`w-16 h-16 rounded-lg flex items-center justify-center text-4xl neon-glow ${
+                    obs.type === 'spike' ? 'bg-red-600' : 
+                    obs.type === 'barrier' ? 'bg-orange-600' : 
+                    'bg-yellow-600'
+                  }`}
+                >
+                  {getObstacleIcon(obs.type)}
+                </div>
+              </div>
             </div>
           ))}
 
-          {score > 500 && (
-            <Button
-              className="absolute bottom-4 right-4 bg-neon-green text-black neon-glow"
-              onClick={() => endGame(true)}
-            >
-              Завершить уровень
-            </Button>
-          )}
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10">
+            <div className="cyber-card px-6 py-3 text-center">
+              <p className="text-sm text-gray-400 mb-1">Управление</p>
+              <div className="flex gap-2 items-center justify-center">
+                <Badge className="bg-neon-green text-black">Пробел</Badge>
+                <span className="text-gray-400">или</span>
+                <Badge className="bg-neon-green text-black">Клик</Badge>
+                <span className="text-gray-400">для прыжка</span>
+              </div>
+            </div>
+          </div>
 
           <style>{`
-            @keyframes roadMove {
-              from { transform: translateX(0); }
-              to { transform: translateX(-100%); }
+            @keyframes spin {
+              from { transform: translateY(-50%) rotate(0deg); }
+              to { transform: translateY(-50%) rotate(360deg); }
             }
           `}</style>
         </div>
@@ -414,26 +648,26 @@ const Index = () => {
 
       {activeScreen === 'menu' && (
         <div className="container mx-auto px-4 py-8">
-          <div className="text-center mb-12">
+          <div className="text-center mb-12 animate-fade-in">
             <h1 className="text-6xl font-bold neon-text mb-4 pulse-glow">
               МОТОЦИКЛ
             </h1>
             <p className="text-2xl neon-text">Избегай препятствия!</p>
           </div>
 
-          <div className="flex justify-center gap-6 mb-8">
-            <Card className="cyber-card px-6 py-3 flex items-center gap-2">
+          <div className="flex justify-center gap-6 mb-8 animate-fade-in">
+            <Card className="cyber-card px-6 py-3 flex items-center gap-2 hover:scale-105 transition-transform">
               <Icon name="Coins" className="text-yellow-400" />
               <span className="text-xl font-bold">{gameState.coins}</span>
             </Card>
-            <Card className="cyber-card px-6 py-3 flex items-center gap-2">
+            <Card className="cyber-card px-6 py-3 flex items-center gap-2 hover:scale-105 transition-transform">
               <Icon name="Gem" className="text-purple-400" />
               <span className="text-xl font-bold">{gameState.eventCoins}</span>
             </Card>
             {!gameState.isLoggedIn && (
               <Button
                 onClick={() => setShowAuth(true)}
-                className="bg-neon-green text-black neon-glow hover:bg-neon-green/80"
+                className="bg-neon-green text-black neon-glow hover:bg-neon-green/80 hover:scale-105 transition-all"
               >
                 <Icon name="User" className="mr-2" />
                 Войти
@@ -441,8 +675,8 @@ const Index = () => {
             )}
           </div>
 
-          <Tabs defaultValue="levels" className="w-full">
-            <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8 mb-8 cyber-card">
+          <Tabs defaultValue="levels" className="w-full animate-fade-in">
+            <TabsList className="grid w-full grid-cols-4 lg:grid-cols-7 mb-8 cyber-card">
               <TabsTrigger value="levels" className="data-[state=active]:bg-neon-green data-[state=active]:text-black">
                 Уровни
               </TabsTrigger>
@@ -472,7 +706,7 @@ const Index = () => {
                   <Card
                     key={level.id}
                     className={`cyber-card p-6 cursor-pointer transition-all hover:scale-105 ${
-                      !level.unlocked ? 'opacity-50' : ''
+                      !level.unlocked ? 'opacity-50 cursor-not-allowed' : ''
                     } ${level.completed ? 'neon-glow' : ''}`}
                     onClick={() => level.unlocked && startLevel(level.id)}
                   >
@@ -507,7 +741,7 @@ const Index = () => {
 
             <TabsContent value="shop">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <Card className="cyber-card p-6">
+                <Card className="cyber-card p-6 hover:scale-105 transition-transform">
                   <h3 className="text-xl font-bold neon-text mb-4">Кастомная тема</h3>
                   <p className="text-gray-400 mb-4">RGB настройка цветов мотоцикла</p>
                   <div className="flex items-center gap-2 mb-4">
@@ -519,11 +753,11 @@ const Index = () => {
                     onClick={purchaseCustomTheme}
                     disabled={gameState.coins < 1000}
                   >
-                    Купить
+                    {gameState.coins >= 1000 ? 'Купить' : 'Недостаточно монет'}
                   </Button>
                 </Card>
 
-                <Card className="cyber-card p-6">
+                <Card className="cyber-card p-6 hover:scale-105 transition-transform">
                   <h3 className="text-xl font-bold neon-text mb-4">Скин: Неоновый</h3>
                   <p className="text-gray-400 mb-4">Светящийся неоновый дизайн</p>
                   <div className="flex items-center gap-2 mb-4">
@@ -535,7 +769,7 @@ const Index = () => {
                   </Button>
                 </Card>
 
-                <Card className="cyber-card p-6">
+                <Card className="cyber-card p-6 hover:scale-105 transition-transform">
                   <h3 className="text-xl font-bold neon-text mb-4">Улучшение: Скорость</h3>
                   <p className="text-gray-400 mb-4">Увеличение базовой скорости</p>
                   <div className="flex items-center gap-2 mb-4">
@@ -553,7 +787,7 @@ const Index = () => {
               <Card className="cyber-card p-8">
                 <h2 className="text-3xl font-bold neon-text mb-6">Сезонные события</h2>
                 <div className="space-y-4">
-                  <Card className="cyber-card p-6 neon-glow">
+                  <Card className="cyber-card p-6 neon-glow hover:scale-105 transition-transform">
                     <div className="flex justify-between items-start mb-4">
                       <div>
                         <h3 className="text-xl font-bold neon-text mb-2">Зимний турнир</h3>
@@ -634,7 +868,7 @@ const Index = () => {
             <TabsContent value="achievements">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {[
-                  { icon: 'Trophy', title: 'Первый шаг', desc: 'Пройди первый уровень', unlocked: true },
+                  { icon: 'Trophy', title: 'Первый шаг', desc: 'Пройди первый уровень', unlocked: gameState.levels[0].completed },
                   { icon: 'Zap', title: 'Скоростной', desc: 'Пройди уровень за 30 секунд', unlocked: false },
                   { icon: 'Shield', title: 'Неуязвимый', desc: 'Пройди уровень без столкновений', unlocked: false },
                   { icon: 'Star', title: 'Перфекционист', desc: 'Собери все звезды на легких уровнях', unlocked: false },
@@ -643,7 +877,7 @@ const Index = () => {
                 ].map((achievement, i) => (
                   <Card
                     key={i}
-                    className={`cyber-card p-6 ${achievement.unlocked ? 'neon-glow' : 'opacity-50'}`}
+                    className={`cyber-card p-6 hover:scale-105 transition-transform ${achievement.unlocked ? 'neon-glow' : 'opacity-50'}`}
                   >
                     <Icon
                       name={achievement.icon as any}
@@ -662,7 +896,7 @@ const Index = () => {
                 <h2 className="text-3xl font-bold neon-text mb-6">Ежедневные задания</h2>
                 <div className="space-y-4">
                   {gameState.dailyQuests.map((quest) => (
-                    <Card key={quest.id} className="cyber-card p-6">
+                    <Card key={quest.id} className="cyber-card p-6 hover:scale-105 transition-transform">
                       <div className="flex justify-between items-start mb-4">
                         <div className="flex-1">
                           <h3 className="text-xl font-bold neon-text mb-2">{quest.title}</h3>
